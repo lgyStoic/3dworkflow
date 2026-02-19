@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>3MF Production Extension Color Export Test</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; }
+    body { font-family: -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; padding: 24px; }
+    h1 { font-size: 20px; margin-bottom: 6px; }
+    h2 { font-size: 14px; margin-bottom: 16px; color: #94a3b8; font-weight: normal; }
+    .test-list { max-width: 780px; }
+    .test-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; margin-bottom: 4px; font-size: 14px; font-family: monospace; }
+    .test-item.pass { background: #064e3b; }
+    .test-item.fail { background: #7f1d1d; }
+    .badge { font-size: 12px; font-weight: 700; min-width: 44px; text-align: center; padding: 2px 6px; border-radius: 4px; }
+    .pass .badge { background: #10b981; color: #000; }
+    .fail .badge { background: #ef4444; color: #fff; }
+    .summary { margin-top: 16px; padding: 12px; background: #1e293b; border-radius: 8px; font-size: 14px; }
+    .detail { color: #94a3b8; font-size: 12px; margin-left: auto; max-width: 400px; text-align: right; }
+    .color-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; border: 1px solid #475569; vertical-align: middle; margin-right: 2px; }
+    #downloadBtn { display:none; margin-top:12px; padding:10px 20px; background:#3b82f6; color:#fff; border:none; border-radius:6px; font-size:14px; cursor:pointer; }
+    #downloadBtn:hover { background:#2563eb; }
+    .section { margin-top: 16px; margin-bottom: 6px; font-size: 13px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; }
+  </style>
+</head>
+<body>
+  <h1>3MF Production Extension Color Export Test</h1>
+  <h2>Strategy: Production Extension — separate object_N.model files per color, per-part extruder in model_settings.config</h2>
+  <div class="test-list" id="results"></div>
+  <div class="summary" id="summary"></div>
+  <button id="downloadBtn">Download test_multipart.3mf</button>
+
+  <script>
+  (async function() {
+    var R = document.getElementById('results'), S = document.getElementById('summary');
+    var pass = 0, fail = 0, NF = 4;
+
+    function section(t) { var d = document.createElement('div'); d.className = 'section'; d.textContent = t; R.appendChild(d); }
+    function test(name, ok, detail) {
+      if (ok) pass++; else fail++;
+      var d = document.createElement('div');
+      d.className = 'test-item ' + (ok ? 'pass' : 'fail');
+      d.innerHTML = '<span class="badge">' + (ok ? 'PASS' : 'FAIL') + '</span><span>' + name + '</span>' + (detail ? '<span class="detail">' + detail + '</span>' : '');
+      R.appendChild(d);
+    }
+
+    // ---- Export function (mirrors utils.jsx Production Extension approach) ----
+    async function buildTestBlob(mesh, imgB64) {
+      var g = mesh.geometry, pos = g.attributes.position.array, idx = g.index.array;
+      var img = new Image();
+      await new Promise(function(r) { img.onload = r; img.src = imgB64; });
+      var cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height;
+      var cx = cv.getContext('2d'); cx.drawImage(img, 0, 0);
+      var px = cx.getImageData(0, 0, img.width, img.height).data;
+
+      var mnX=Infinity,mxX=-Infinity,mnY=Infinity,mxY=-Infinity;
+      for (var i=0;i<pos.length;i+=3){mnX=Math.min(mnX,pos[i]);mxX=Math.max(mxX,pos[i]);mnY=Math.min(mnY,pos[i+1]);mxY=Math.max(mxY,pos[i+1]);}
+      var rX=mxX-mnX||1,rY=mxY-mnY||1,Q=51;
+      function q(v){return Math.min(255,Math.round(v/Q)*Q)}
+      function sample(x,y){var u=Math.max(0,Math.min(1,(x-mnX)/rX)),v=Math.max(0,Math.min(1,1-(y-mnY)/rY));
+        var px2=Math.min(Math.floor(u*img.width),img.width-1),py=Math.min(Math.floor(v*img.height),img.height-1),i=(py*img.width+px2)*4;
+        return[q(px[i]),q(px[i+1]),q(px[i+2])];}
+
+      var cMap=new Map(),tColors=[];
+      for(var i=0;i<idx.length;i+=3){var a=idx[i]*3,b=idx[i+1]*3,c=idx[i+2]*3;
+        var cx2=(pos[a]+pos[b]+pos[c])/3,cy=(pos[a+1]+pos[b+1]+pos[c+1])/3;
+        var rgb=sample(cx2,cy);var hex='#'+rgb.map(function(v){return v.toString(16).padStart(2,'0')}).join('').toUpperCase()+'FF';
+        if(!cMap.has(hex))cMap.set(hex,cMap.size);tColors.push(cMap.get(hex));}
+
+      var colors=Array.from(cMap.keys());
+      var pH=function(h){return[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)]};
+      if(colors.length>NF){var usage=new Array(colors.length).fill(0);for(var ci of tColors)usage[ci]++;
+        var ranked=usage.map(function(c,i){return{i:i,c:c}}).sort(function(a,b){return b.c-a.c});
+        var keep=new Set(ranked.slice(0,NF).map(function(r){return r.i}));var kArr=Array.from(keep);
+        var kRgb=kArr.map(function(i){return pH(colors[i])});var remap=new Array(colors.length);
+        var nc=kArr.map(function(i){return colors[i]});kArr.forEach(function(o,n){remap[o]=n});
+        for(var i=0;i<colors.length;i++){if(keep.has(i))continue;var rgb=pH(colors[i]);var bd=Infinity,bn=0;
+          for(var j=0;j<kRgb.length;j++){var d=(rgb[0]-kRgb[j][0])**2+(rgb[1]-kRgb[j][1])**2+(rgb[2]-kRgb[j][2])**2;if(d<bd){bd=d;bn=j}}remap[i]=bn;}
+        for(var i=0;i<tColors.length;i++)tColors[i]=remap[tColors[i]];colors=nc;}
+
+      var nColors=colors.length;
+
+      // Split triangles by color into separate sub-meshes
+      var partMeshes=[];
+      for(var c=0;c<nColors;c++){
+        var vMap=new Map(),lv=[],lt=[];
+        for(var t=0;t<tColors.length;t++){
+          if(tColors[t]!==c)continue;
+          var gi=t*3,tri=[];
+          for(var v=0;v<3;v++){var gvi=idx[gi+v];
+            if(!vMap.has(gvi)){vMap.set(gvi,lv.length/3);lv.push(pos[gvi*3],pos[gvi*3+1],pos[gvi*3+2])}
+            tri.push(vMap.get(gvi));}
+          lt.push(tri);}
+        partMeshes.push({verts:lv,tris:lt});}
+
+      // Production Extension format — separate object_N.model files per color
+      // p:UUID is REQUIRED by Production Extension spec; BambuStudio enforces this
+      var assemblyId=nColors+1;
+      var NS='http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
+      var NS_BBS='http://schemas.bambulab.com/package/2021';
+      var NS_P='http://schemas.microsoft.com/3dmanufacturing/production/2015/06';
+      function mkUUID(a,b,c,d){var h=function(v,l){return v.toString(16).padStart(l,'0')};return h(a,8)+'-'+h(b,4)+'-'+h(c,4)+'-'+h(d,4)+'-'+h(a*256+b,12)}
+
+      // Generate separate .model files for each color part
+      var subModelFiles=[];
+      for(var c=0;c<nColors;c++){
+        var vXml='';for(var j=0;j<partMeshes[c].verts.length;j+=3)
+          vXml+='     <vertex x="'+partMeshes[c].verts[j].toFixed(4)+'" y="'+partMeshes[c].verts[j+1].toFixed(4)+'" z="'+partMeshes[c].verts[j+2].toFixed(4)+'"/>\n';
+        var tXml='';for(var j=0;j<partMeshes[c].tris.length;j++)
+          tXml+='     <triangle v1="'+partMeshes[c].tris[j][0]+'" v2="'+partMeshes[c].tris[j][1]+'" v3="'+partMeshes[c].tris[j][2]+'"/>\n';
+        var objId=c+1;
+        var subUUID=mkUUID(objId,1,4001,objId);
+        var xml='<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="en-US" xmlns="'+NS+'" xmlns:p="'+NS_P+'" requiredextensions="p">\n <metadata name="BambuStudio:3mfVersion">1</metadata>\n <resources>\n  <object id="'+objId+'" p:UUID="'+subUUID+'" type="model">\n   <mesh>\n    <vertices>\n'+vXml+'    </vertices>\n    <triangles>\n'+tXml+'    </triangles>\n   </mesh>\n  </object>\n </resources>\n</model>';
+        subModelFiles.push({path:'3D/Objects/object_'+(c+1)+'.model',content:xml});}
+
+      // Assembly model (3dmodel.model) — components reference sub-files via p:path
+      var asmUUID=mkUUID(assemblyId,2,4002,assemblyId);
+      var buildUUID=mkUUID(99,3,4003,99);
+      var itemUUID=mkUUID(assemblyId,4,4004,assemblyId);
+      var compXml='';
+      for(var c=0;c<nColors;c++){
+        var compUUID=mkUUID(c+1,5,4005,c+1);
+        compXml+='    <component p:path="/3D/Objects/object_'+(c+1)+'.model" objectid="'+(c+1)+'" p:UUID="'+compUUID+'" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>\n';}
+
+      var mainM='<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="en-US" xmlns="'+NS+'" xmlns:BambuStudio="'+NS_BBS+'" xmlns:p="'+NS_P+'" requiredextensions="p">\n <metadata name="Application">BambuStudio-02.04.00.70</metadata>\n <metadata name="BambuStudio:3mfVersion">1</metadata>\n <resources>\n  <object id="'+assemblyId+'" p:UUID="'+asmUUID+'" type="model">\n   <components>\n'+compXml+'   </components>\n  </object>\n </resources>\n <build p:UUID="'+buildUUID+'">\n  <item objectid="'+assemblyId+'" p:UUID="'+itemUUID+'" transform="1 0 0 0 1 0 0 0 1 125 125 0" printable="1"/>\n </build>\n</model>';
+
+      // model_settings.config — per-part extruder assignment
+      var partsXml='';
+      for(var c=0;c<nColors;c++){
+        partsXml+='    <part id="'+(c+1)+'" subtype="normal_part">\n      <metadata key="name" value="Color'+(c+1)+'"/>\n      <metadata key="extruder" value="'+(c+1)+'"/>\n      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n      <metadata key="source_file" value=""/>\n      <metadata key="source_object_id" value="0"/>\n      <metadata key="source_volume_id" value="0"/>\n      <metadata key="source_offset_x" value="0"/>\n      <metadata key="source_offset_y" value="0"/>\n      <metadata key="source_offset_z" value="0"/>\n      <mesh_stat edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>\n    </part>\n';}
+      var totalTris=partMeshes.reduce(function(s,p){return s+p.tris.length},0);
+      var filMaps=[];for(var i=1;i<=nColors;i++)filMaps.push(i);
+      var modelS='<?xml version="1.0" encoding="UTF-8"?>\n<config>\n  <object id="'+assemblyId+'">\n    <metadata key="name" value="ColorRelief"/>\n    <metadata key="extruder" value="1"/>\n    <metadata face_count="'+totalTris+'"/>\n'+partsXml+'  </object>\n  <plate>\n    <metadata key="plater_id" value="1"/>\n    <metadata key="plater_name" value=""/>\n    <metadata key="locked" value="false"/>\n    <metadata key="print_sequence" value="by layer"/>\n    <metadata key="filament_map_mode" value="Auto For Flush"/>\n    <metadata key="filament_maps" value="'+filMaps.join(' ')+'"/>\n    <model_instance>\n      <metadata key="object_id" value="'+assemblyId+'"/>\n      <metadata key="instance_id" value="0"/>\n      <metadata key="identify_id" value="1"/>\n    </model_instance>\n  </plate>\n  <assemble>\n   <assemble_item object_id="'+assemblyId+'" instance_id="0" transform="1 0 0 0 1 0 0 0 1 125 125 0" offset="0 0 0"/>\n  </assemble>\n</config>';
+
+      // Sub-file relationships (3D/_rels/3dmodel.model.rels)
+      var subRelsXml='';
+      for(var c=0;c<nColors;c++)
+        subRelsXml+=' <Relationship Target="/3D/Objects/object_'+(c+1)+'.model" Id="rel-'+(c+1)+'" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n';
+      var modelRels='<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'+subRelsXml+'</Relationships>';
+
+      var z=new JSZip();
+      z.file('[Content_Types].xml','<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n</Types>');
+      z.folder('_rels').file('.rels','<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n</Relationships>');
+      z.folder('3D').file('3dmodel.model',mainM);
+      z.folder('3D').folder('_rels').file('3dmodel.model.rels',modelRels);
+      for(var sf of subModelFiles) z.file(sf.path,sf.content);
+      z.folder('Metadata').file('model_settings.config',modelS);
+
+      // project_settings.config — 告诉 BambuStudio 创建 N 个 filament 槽位
+      var filCols=colors.map(function(c){return'"'+c.slice(0,7)+'"'}).join(',');
+      var r=function(v){var a=[];for(var i=0;i<nColors;i++)a.push('"'+v+'"');return a.join(',')};
+      var fmx=[];for(var i=0;i<nColors;i++)for(var j=0;j<nColors;j++)fmx.push(i===j?'"0"':'"300"');
+      var fv=[];for(var i=0;i<nColors*2;i++)fv.push('"140"');
+      var projS=JSON.stringify({
+        printer_settings_id:"Bambu Lab P2S 0.4 nozzle",printer_model:"Bambu Lab P2S",printer_variant:"0.4",
+        printer_technology:"FFF",print_settings_id:"0.20mm Standard @BBL P2S",
+        nozzle_diameter:["0.4"],printable_area:["0x0","256x0","256x256","0x256"],
+        filament_colour:colors.map(function(c){return c.slice(0,7)}),
+        filament_type:colors.map(function(){return"PLA"}),
+        filament_settings_id:colors.map(function(){return"Bambu PLA Basic @BBL P2S"}),
+        filament_vendor:colors.map(function(){return"Bambu Lab"}),
+        filament_ids:colors.map(function(){return"GFA00"}),
+        filament_density:colors.map(function(){return"1.26"}),
+        filament_diameter:colors.map(function(){return"1.75"}),
+        filament_cost:colors.map(function(){return"24.99"}),
+        filament_is_support:colors.map(function(){return"0"}),
+        filament_soluble:colors.map(function(){return"0"}),
+        default_filament_colour:colors.map(function(){return""}),
+        nozzle_temperature_range_low:colors.map(function(){return"190"}),
+        nozzle_temperature_range_high:colors.map(function(){return"240"}),
+        hot_plate_temp:colors.map(function(){return"55"}),
+        hot_plate_temp_initial_layer:colors.map(function(){return"55"}),
+        textured_plate_temp:colors.map(function(){return"55"}),
+        textured_plate_temp_initial_layer:colors.map(function(){return"55"}),
+        cool_plate_temp:colors.map(function(){return"35"}),
+        cool_plate_temp_initial_layer:colors.map(function(){return"35"}),
+        eng_plate_temp:colors.map(function(){return"55"}),
+        eng_plate_temp_initial_layer:colors.map(function(){return"55"}),
+        supertack_plate_temp:colors.map(function(){return"40"}),
+        supertack_plate_temp_initial_layer:colors.map(function(){return"40"}),
+        temperature_vitrification:colors.map(function(){return"45"}),
+        filament_start_gcode:colors.map(function(){return"; filament start gcode\n"}),
+        filament_end_gcode:colors.map(function(){return"; filament end gcode \n\n"}),
+        pressure_advance:colors.map(function(){return"0.02"}),
+        fan_max_speed:colors.map(function(){return"100"}),
+        fan_min_speed:colors.map(function(){return"100"}),
+        overhang_fan_speed:colors.map(function(){return"100"}),
+        slow_down_layer_time:colors.map(function(){return"4"}),
+        slow_down_min_speed:colors.map(function(){return"20"}),
+        filament_shrink:colors.map(function(){return"100%"}),
+        flush_volumes_matrix:fmx,flush_volumes_vector:fv
+      },null,2);
+      z.folder('Metadata').file('project_settings.config',projS);
+
+      return {blob: await z.generateAsync({type:'blob',compression:'DEFLATE'}), colors: colors, partMeshes: partMeshes, assemblyId: assemblyId, subModelFiles: subModelFiles};
+    }
+
+    // ---- Fixtures ----
+    function makeMesh(){var g=new THREE.PlaneGeometry(60,60,10,10);var p=g.attributes.position;for(var i=0;i<p.count;i++)p.setZ(i,Math.random()*5);g.computeVertexNormals();return new THREE.Mesh(g,new THREE.MeshStandardMaterial());}
+    function makeImage(){var c=document.createElement('canvas');c.width=8;c.height=8;var x=c.getContext('2d');
+      // 简单 2x2 四色方块，确保恰好 4 种颜色
+      x.fillStyle='#ff0000';x.fillRect(0,0,4,4);  // 左上 红
+      x.fillStyle='#00ff00';x.fillRect(4,0,4,4);  // 右上 绿
+      x.fillStyle='#0000ff';x.fillRect(0,4,4,4);  // 左下 蓝
+      x.fillStyle='#ffff00';x.fillRect(4,4,4,4);  // 右下 黄
+      return c.toDataURL('image/png');}
+
+    // ---- Tests ----
+    try {
+      var mesh=makeMesh(),imgB64=makeImage();
+      section('Setup');
+      test('Mesh created',!!mesh&&!!mesh.geometry.index,mesh.geometry.index.count/3+' tris');
+      test('Image created (4 colors, 2x2 grid)',imgB64.startsWith('data:image/png'));
+
+      var result=await buildTestBlob(mesh,imgB64);
+      var blob=result.blob,fColors=result.colors,parts=result.partMeshes,asmId=result.assemblyId,subFiles=result.subModelFiles;
+      test('Blob generated',!!blob&&blob.size>0,blob.size+' bytes');
+
+      var swatches=fColors.map(function(c){return'<span class="color-swatch" style="background:'+c.slice(0,7)+'"></span>'+c}).join(' ');
+      test('Exactly '+NF+' colors',fColors.length===NF,swatches);
+      test('Mesh split into '+NF+' parts',parts.length===NF,parts.map(function(p,i){return'P'+(i+1)+':'+p.tris.length+'t'}).join(' '));
+      test('All parts have triangles',parts.every(function(p){return p.tris.length>0}));
+
+      var origTriCount=mesh.geometry.index.count/3;
+      var splitTriCount=parts.reduce(function(s,p){return s+p.tris.length},0);
+      test('Triangle count preserved',splitTriCount===origTriCount,origTriCount+'→'+splitTriCount);
+
+      document.getElementById('downloadBtn').style.display='inline-block';
+      document.getElementById('downloadBtn').onclick=function(){var u=URL.createObjectURL(blob);var a=document.createElement('a');a.href=u;a.download='test_multipart.3mf';a.click();URL.revokeObjectURL(u);};
+
+      var zip=await JSZip.loadAsync(blob);
+      var files=Object.keys(zip.files);
+
+      section('File structure (Production Extension)');
+      ['[Content_Types].xml','_rels/.rels','3D/3dmodel.model','3D/_rels/3dmodel.model.rels','Metadata/model_settings.config'].forEach(function(f){test(f+' exists',files.includes(f));});
+      for(var c=1;c<=NF;c++) test('3D/Objects/object_'+c+'.model exists',files.includes('3D/Objects/object_'+c+'.model'));
+      test('Has project_settings.config',files.includes('Metadata/project_settings.config'),'for BambuStudio filament slots');
+
+      section('Assembly model (3dmodel.model)');
+      var modelXml=await zip.file('3D/3dmodel.model').async('string');
+      var doc=new DOMParser().parseFromString(modelXml,'text/xml');
+
+      test('NO paint_color anywhere',!modelXml.includes('paint_color'),'avoids TriangleSelector crash');
+      test('Has BambuStudio namespace',modelXml.includes('xmlns:BambuStudio'),'required for config parsing');
+      test('Has Production Extension namespace',modelXml.includes('xmlns:p='),'required for split files');
+      test('Has requiredextensions="p"',modelXml.includes('requiredextensions="p"'));
+      test('Has BambuStudio:3mfVersion metadata',modelXml.includes('BambuStudio:3mfVersion'));
+
+      // Assembly should have NO inline mesh objects — only assembly with components
+      var objects=doc.querySelectorAll('object');
+      test('Only 1 assembly object (no inline meshes)',objects.length===1,'id='+asmId);
+
+      var asmObj=doc.querySelector('object[id="'+asmId+'"]');
+      test('Assembly object id='+asmId,!!asmObj);
+
+      // Check components use p:path
+      var components=asmObj?asmObj.querySelectorAll('component'):[];
+      test('Assembly has '+NF+' components',components.length===NF);
+
+      // DOMParser may not resolve namespaced attributes — check raw XML instead
+      var pathCount=(modelXml.match(/p:path="/g)||[]).length;
+      test('All components have p:path attribute',pathCount===NF,pathCount+' p:path found');
+
+      var compObjIds=Array.from(components).map(function(c){return c.getAttribute('objectid')});
+      var expectedObjIds=[];for(var i=1;i<=NF;i++)expectedObjIds.push(''+i);
+      test('Components reference objectid 1-'+NF,JSON.stringify(compObjIds)===JSON.stringify(expectedObjIds),'objectid must match sub-file object id + config part id');
+
+      // Build item
+      var buildItem=doc.querySelector('item');
+      test('Build item → objectid='+asmId,buildItem&&buildItem.getAttribute('objectid')===''+asmId);
+
+      section('Sub-model files (3D/Objects/object_N.model)');
+      for(var c=1;c<=NF;c++){
+        var subXml=await zip.file('3D/Objects/object_'+c+'.model').async('string');
+        var subDoc=new DOMParser().parseFromString(subXml,'text/xml');
+        var subObj=subDoc.querySelector('object[id="'+c+'"]');
+        var hasMesh=subObj&&subObj.querySelector('mesh');
+        var hasVerts=hasMesh&&subDoc.querySelector('vertices');
+        var hasTris=hasMesh&&subDoc.querySelector('triangles');
+        test('object_'+c+'.model: object id='+c+' with mesh',!!hasMesh&&!!hasVerts&&!!hasTris);
+        test('object_'+c+'.model: has Production Extension ns',subXml.includes('xmlns:p='));
+        test('object_'+c+'.model: NO BambuStudio ns',!subXml.includes('xmlns:BambuStudio'),'only assembly needs it');
+      }
+
+      section('Relationships (3D/_rels/3dmodel.model.rels)');
+      var relsXml=await zip.file('3D/_rels/3dmodel.model.rels').async('string');
+      for(var c=1;c<=NF;c++){
+        test('Rels references object_'+c+'.model',relsXml.includes('/3D/Objects/object_'+c+'.model'));
+      }
+      test('Rels has 3dmodel relationship type',relsXml.includes('3dmanufacturing/2013/01/3dmodel'));
+
+      section('model_settings.config');
+      var msXml=await zip.file('Metadata/model_settings.config').async('string');
+      var msDoc=new DOMParser().parseFromString(msXml,'text/xml');
+      var msParts=msDoc.querySelectorAll('part');
+      test(NF+' parts in config',msParts.length===NF);
+      test('Config object id='+asmId,msDoc.querySelector('object[id="'+asmId+'"]')!==null);
+
+      // Check each part has correct extruder
+      var extrudersCorrect=true;
+      for(var c=0;c<NF;c++){
+        var part=msParts[c];
+        var ext=part?part.querySelector('metadata[key="extruder"]'):null;
+        if(!ext||ext.getAttribute('value')!==''+(c+1)) extrudersCorrect=false;
+      }
+      test('Parts have extruder values 1-'+NF,extrudersCorrect);
+      test('Has assemble section',msXml.includes('<assemble>'));
+      test('Has plate section',msXml.includes('<plate>'));
+
+      section('project_settings.config (filament slots)');
+      var psJson=await zip.file('Metadata/project_settings.config').async('string');
+      var ps=JSON.parse(psJson);
+      test('filament_colour has '+NF+' entries',ps.filament_colour&&ps.filament_colour.length===NF,JSON.stringify(ps.filament_colour));
+      test('filament_type has '+NF+' entries',ps.filament_type&&ps.filament_type.length===NF);
+      test('filament_settings_id has '+NF+' entries',ps.filament_settings_id&&ps.filament_settings_id.length===NF);
+      test('flush_volumes_matrix has '+NF*NF+' entries',ps.flush_volumes_matrix&&ps.flush_volumes_matrix.length===NF*NF);
+
+    } catch(err) {
+      test('Unexpected error',false,err.message);
+      console.error(err);
+    }
+
+    var total=pass+fail,ok=fail===0;
+    S.style.background=ok?'#064e3b':'#7f1d1d';
+    S.textContent=(ok?'ALL PASSED':'SOME FAILED')+': '+pass+'/'+total+' passed, '+fail+' failed';
+  })();
+  </script>
+</body>
+</html>

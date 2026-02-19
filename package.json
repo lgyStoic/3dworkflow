@@ -1,0 +1,13 @@
+{
+  "name": "3dworkflow",
+  "version": "1.0.0",
+  "description": "AI 灵感工坊 - 3D Printing Workflow",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "dotenv": "^16.4.5"
+  }
+}
